@@ -1,6 +1,6 @@
 # CareerPilot Proposed Architecture
 
-**Status:** mostly a design proposal. Implemented now: a minimal FastAPI `/health` endpoint, Pydantic evidence/approval models, deterministic validation helpers, and pytest coverage. The models are passed as in-memory objects; there is no API for managing them, persistence, authentication, LLM, workflow engine, or browser integration. Other components and technology choices below remain proposals to validate.
+**Status:** mostly a design proposal. Implemented now: a FastAPI `/health` endpoint, Pydantic evidence/approval models, deterministic validation helpers, a candidate-scoped SQLite evidence API, and pytest coverage. SQLite is a local file; approval objects remain in-memory, and there is no authentication, LLM, workflow engine, or browser integration. Other components and technology choices below remain proposals to validate.
 
 ## 1. Architecture goals
 
@@ -15,8 +15,9 @@
 | Component | Responsibility | Boundary |
 | --- | --- | --- |
 | Next.js + TypeScript UI | Evidence management, job entry, review screens, draft approval, and application tracking | Displays proposals and collects explicit user intent; does not decide authorization on its own. |
-| FastAPI service (Python) | Current: health endpoint. Planned: API, authentication integration, domain validation, workflow coordination, and durable state transitions | Current validation helpers check evidence verification and exact action/scope approval. Authentication, persistence, ownership, duplicate prevention, rate limits, and action execution are not implemented. |
-| PostgreSQL | Store users, candidate evidence, jobs, drafts, approvals, and application event history | Authoritative persisted records; access through the backend, with transactions for consequential state changes. |
+| FastAPI service (Python) | Current: health and candidate evidence endpoints. Planned: authentication integration, workflow coordination, and broader state transitions | Evidence reads and writes are scoped by candidate ID. Current validation helpers check evidence verification and exact action/scope approval. Candidate identity is not authenticated; duplicate prevention, rate limits, and action execution are not implemented. |
+| SQLite (current) | Persist candidate evidence in a local database file | Built into Python and easy to run locally without a separate server. It is appropriate for this small, single-process learning stage. Relative `CAREERPILOT_DB_PATH` values resolve from the repository root; blank values fail at startup. New database files use owner-only permissions on POSIX where supported; existing file permissions are not changed. SQLite sidecar permissions are not separately set or verified. There is no encryption, backup, or multi-process deployment plan. |
+| PostgreSQL (proposed later) | Store users, jobs, drafts, approvals, and application event history if deployment/concurrency needs justify it | Relational records and transactions are a good fit, but the project does not need a database server for the current evidence API. |
 | pgvector (optional) | Retrieve semantically related evidence | Candidate evidence remains authoritative. Similarity is a retrieval hint, not proof of truth or fit. Validate against keyword/metadata search first. |
 | LLM API (provider TBD) | Propose structured job requirements, explain comparisons, draft text, and critique drafts | Receives only necessary, minimized context. Its output is untrusted and must pass parsing, provenance, and deterministic checks. |
 | Embedding model (provider TBD) | Encode evidence and requirements for optional semantic retrieval | Assess privacy, model/provider terms, quality, cost, and benefit before selecting. |
@@ -50,11 +51,11 @@ flowchart LR
     API --> DB
 ```
 
-The diagram describes a proposal, not a deployed system. The database is accessed by the backend; AI output cannot write directly to it or trigger a browser action.
+The diagram describes the future proposal, not the current implementation. Today the backend accesses SQLite for evidence. PostgreSQL and other components remain planned. AI output cannot write directly to a database or trigger a browser action.
 
 ## 4. Data flow
 
-1. **Evidence setup:** Candidate enters evidence and its source/provenance. The candidate explicitly marks reviewed items verified. The backend stores versions and ownership.
+1. **Evidence setup (partly implemented):** Candidate-scoped API accepts claim, source/provenance, and metadata. New items start unverified. A separate verification endpoint changes only verification status and update time; source and claim are preserved. Data persists in a local SQLite file. Candidate ID in the URL is caller-controlled: it is a scope key, not proof of identity, because authentication is not implemented.
 2. **Job intake:** Candidate pastes a job description. Store the raw text as untrusted content. Do not fetch links or execute content. An extraction step may propose structured requirements with text references; candidate reviews and edits them.
 3. **Explainable comparison:** Retrieval selects candidate evidence for each requirement using metadata/keyword search first, with embeddings as an optional aid. The backend records which evidence was considered. UI presents supported, partial, unknown, or not evidenced states and the reasons. These labels describe the available records, not the person's abilities or hiring likelihood.
 4. **Draft generation:** The workflow sends the minimum necessary reviewed requirements and verified evidence to the selected LLM. The model returns a structured draft with evidence identifiers for factual claims. The backend checks identifiers, ownership, verification state, and required content. Invalid/unsupported claims are flagged or removed from an approvable draft.
@@ -66,7 +67,7 @@ The diagram describes a proposal, not a deployed system. The database is accesse
 
 - **User:** authenticated account identity and settings. Enforce ownership for all candidate data.
 - **CandidateProfile:** candidate-level profile and preferences; avoid duplicating sensitive facts without purpose.
-- **EvidenceItem:** a candidate assertion such as employment, project, education, skill, certification, or metric; includes text, dates/attributes, source/provenance, verification state, and created/updated timestamps.
+- **EvidenceItem (implemented in SQLite):** a candidate assertion with UUID, candidate ID, claim, source/provenance, verification state, metadata, and UTC creation/update timestamps. SQLite indexes candidate ID and filters every lookup/update by both candidate ID and evidence ID. Revision history is not implemented yet.
 - **EvidenceVersion:** immutable snapshot or version history for changes to evidence used by drafts.
 - **Job:** manually entered job description, organization/role metadata, source, and lifecycle state. Raw description is untrusted input.
 - **JobRequirement:** reviewed requirement extracted from the job, with original text reference, normalized description, category, and candidate-reviewed state.
@@ -118,7 +119,7 @@ LangGraph may represent pauses and resume points, but deterministic services sho
 
 ### Permissions and external actions
 
-- Require authenticated ownership checks at the backend for every candidate, job, evidence, and draft operation.
+- Future hosted use requires authenticated ownership checks at the backend for every candidate, job, evidence, and draft operation. Current endpoints scope records by candidate ID but do not authenticate that the caller owns that ID; do not use with real personal data.
 - Submission/message approval is explicit, action-specific, and tied to the exact destination and payload. Editing either invalidates approval.
 - The implemented helper compares the complete action name and scope mapping for equality. It is only a domain check over caller-supplied objects: it does not authenticate the approver, persist approval, prove user intent, prevent replay, or authorize a real external action.
 - Enforce approval, duplicate prevention, idempotency, rate limits, field validation, and allowed destination in deterministic application code immediately before browser execution.

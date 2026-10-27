@@ -39,7 +39,7 @@ This is a proposed stack, not a set of finalized implementation decisions. See [
 
 ## Project status
 
-**Status: early backend foundation.** The repository now has a FastAPI health endpoint, Pydantic models for candidate evidence and action approval, deterministic validation functions, and pytest tests. These are the only implemented product-related capabilities. They use in-memory objects and provide no persistence, authentication, resume generation, or external-action endpoint. This is a learning foundation, not a production-secure service. All other capabilities remain planned unless explicitly labeled otherwise.
+**Status: early backend foundation.** The FastAPI backend has a health endpoint and candidate-scoped evidence API backed by a local SQLite database. It also has Pydantic models, deterministic validation functions, and pytest tests. Action approval remains an in-memory validation helper; there is no authentication, resume generation, or external-action endpoint. Candidate IDs scope database queries but are not authenticated identities, so this is a learning foundation, not a production-secure service. All other capabilities remain planned unless explicitly labeled otherwise.
 
 ## Run the backend locally
 
@@ -59,8 +59,12 @@ source .venv/bin/activate
 python -m pytest backend/tests
 ```
 
-The API currently stores no candidate or approval records, so the validation services receive in-memory model objects from their caller. Do not use this version with real candidate data or real applications. It has no authentication, database, or external-action integration. No API keys are needed for this foundation; never add secrets to source control.
+Evidence is stored in `backend/data/careerpilot.sqlite3` by default. Set `CAREERPILOT_DB_PATH` to choose another SQLite file; a relative value is resolved from the repository root, regardless of the server's launch directory. An empty value is rejected during backend startup. On POSIX systems, a newly created database file is created with owner-only permissions. Existing database file permissions are left unchanged. SQLite may create journal/sidecar files; this project does not set or verify their permissions. The database is local and is not encrypted or backed up by this project, so filesystem access controls and local device security still matter.
 
-The proposed future local stack may include a frontend and database, but neither is implemented or needed to run this backend foundation.
+API operations filter records by the candidate ID in the URL, but that ID is caller-controlled. There is no authentication yet, so a caller can claim another candidate ID; do not use this version with real candidate data. No API keys are needed for this foundation; never add secrets to source control.
+
+Available evidence routes are `POST /candidates/{candidate_id}/evidence`, `GET /candidates/{candidate_id}/evidence`, `GET /candidates/{candidate_id}/evidence/{evidence_id}`, and `PATCH /candidates/{candidate_id}/evidence/{evidence_id}/verification`. New evidence starts unverified. The verification update changes only its status and update timestamp, preserving its claim and source metadata.
+
+The proposed future local stack may include a frontend and a larger database such as PostgreSQL, but neither is implemented or needed to run this backend foundation.
 
 For the product requirements, see [docs/PRD.md](docs/PRD.md). For the proposed system design, see [docs/architecture.md](docs/architecture.md). For dependency-ordered implementation steps, see [docs/roadmap.md](docs/roadmap.md).

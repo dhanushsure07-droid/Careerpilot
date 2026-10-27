@@ -4,7 +4,7 @@
 
 ## Current project state
 
-The documentation foundation and the first backend slice exist. The backend currently has a health endpoint, in-memory Pydantic evidence and action-approval models, deterministic evidence-reference/verification and exact action/scope checks, and pytest coverage. Persistence, authentication, CRUD APIs, resume drafting, and external action execution are not implemented. The API is not production-secure.
+The documentation foundation and backend foundation exist. The backend has a health endpoint, SQLite-backed candidate-scoped evidence operations, Pydantic models, deterministic evidence-reference/verification and exact action/scope checks, and pytest coverage. Evidence persistence and its API are implemented; authentication, evidence revision history, resume drafting, and external action execution are not. Candidate IDs are not authenticated identities, so the API is not production-secure.
 
 ## Milestone 0 — Product and repository foundation
 
@@ -43,9 +43,11 @@ The documentation foundation and the first backend slice exist. The backend curr
 
 **Definition of done:** the project runs locally with a documented health check, core domain rules are tested without AI, and the README distinguishes working setup from future features.
 
-**Progress:** The minimal backend foundation is in place, including local run instructions and unit/API tests. The larger milestone remains in progress: no frontend, database, authentication, persistence, or CI workflow has been added.
+**Progress:** The minimal backend foundation and local run instructions are in place. The larger milestone remains in progress: no frontend, authentication, or CI workflow has been added. Local SQLite persistence is now implemented for candidate evidence.
 
 ## Milestone 2 — Candidate Knowledge Base
+
+**Progress:** Initial evidence persistence and API operations are implemented using SQLite. The remaining milestone work includes authentication/ownership enforcement, evidence revision history, and a candidate-facing UI.
 
 **Deliverables**
 
