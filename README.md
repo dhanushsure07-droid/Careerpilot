@@ -39,7 +39,7 @@ This is a proposed stack, not a set of finalized implementation decisions. See [
 
 ## Project status
 
-**Status: early backend foundation.** The FastAPI backend has a health endpoint and candidate-scoped evidence API backed by a local SQLite database. It also has Pydantic models, deterministic validation functions, and pytest tests. Action approval remains an in-memory validation helper; there is no authentication, resume generation, or external-action endpoint. Candidate IDs scope database queries but are not authenticated identities, so this is a learning foundation, not a production-secure service. All other capabilities remain planned unless explicitly labeled otherwise.
+**Status: early backend foundation.** The FastAPI backend has a public health endpoint and Supabase-authenticated evidence API backed by a local SQLite database. It verifies access tokens, maps their Supabase user ID to `candidate_id`, and rejects mismatches. Action approval remains an in-memory validation helper; resume generation and external-action endpoints are not implemented. This is a learning foundation and has not had a production security review. All other capabilities remain planned unless explicitly labeled otherwise.
 
 ## Run the backend locally
 
@@ -49,6 +49,8 @@ Python 3.11 or newer is required. From the repository root, install the backend 
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e "./backend[dev]"
+if [ ! -f .env ]; then cp .env.example .env; fi
+# Edit .env and set the Supabase project URL and publishable key.
 uvicorn app.main:app --app-dir backend --reload
 ```
 
@@ -59,9 +61,15 @@ source .venv/bin/activate
 python -m pytest backend/tests
 ```
 
+Auth tests use generated signing keys and mocked network responses. They do not need live Supabase credentials or network access.
+
 Evidence is stored in `backend/data/careerpilot.sqlite3` by default. Set `CAREERPILOT_DB_PATH` to choose another SQLite file; a relative value is resolved from the repository root, regardless of the server's launch directory. An empty value is rejected during backend startup. On POSIX systems, a newly created database file is created with owner-only permissions. Existing database file permissions are left unchanged. SQLite may create journal/sidecar files; this project does not set or verify their permissions. The database is local and is not encrypted or backed up by this project, so filesystem access controls and local device security still matter.
 
-API operations filter records by the candidate ID in the URL, but that ID is caller-controlled. There is no authentication yet, so a caller can claim another candidate ID; do not use this version with real candidate data. No API keys are needed for this foundation; never add secrets to source control.
+The root `.env` is ignored by Git. The backend loads it locally without printing its values; process environment variables take precedence. Copy the project URL and publishable key from the Supabase dashboard's API settings. The browser/client must obtain an **access token for a signed-in Supabase user** and send `Authorization: Bearer <access-token>` to evidence routes. This backend does not implement login or issue user tokens.
+
+For a manual setup, use a Supabase project with Auth enabled, copy its Project URL and publishable key into `.env`, then sign in a test user through a Supabase client to obtain a session access token. The backend verifies RS256/ES256 signatures with the project's public JWKS and checks the issuer, audience, expiry, authenticated role, and user ID. For `HS256`, it asks the project's `/auth/v1/user` endpoint to validate the bearer token and sends the publishable key separately in the `apikey` header. The publishable key identifies the project for API access; it is not a user's session and is never accepted as the bearer credential. You do not need to copy a signing secret into this repository. See [Supabase JWT guidance](https://supabase.com/docs/guides/auth/jwts) and [JWT signing keys](https://supabase.com/docs/guides/auth/signing-keys).
+
+Candidate ownership maps directly to the Supabase `auth.users.id`: the authenticated JWT `sub` must equal the `candidate_id` in the route. A different candidate ID returns 403. The API still does not provide login, user registration, refresh-token management, or a production security review. Existing SQLite rows are reachable only if their stored candidate ID already matches the user's Supabase UUID; back up and deliberately migrate any data before using those accounts.
 
 Available evidence routes are `POST /candidates/{candidate_id}/evidence`, `GET /candidates/{candidate_id}/evidence`, `GET /candidates/{candidate_id}/evidence/{evidence_id}`, and `PATCH /candidates/{candidate_id}/evidence/{evidence_id}/verification`. New evidence starts unverified. The verification update changes only its status and update timestamp, preserving its claim and source metadata.
 

@@ -4,7 +4,7 @@
 
 ## Current project state
 
-The documentation foundation and backend foundation exist. The backend has a health endpoint, SQLite-backed candidate-scoped evidence operations, Pydantic models, deterministic evidence-reference/verification and exact action/scope checks, and pytest coverage. Evidence persistence and its API are implemented; authentication, evidence revision history, resume drafting, and external action execution are not. Candidate IDs are not authenticated identities, so the API is not production-secure.
+The documentation foundation and backend foundation exist. The backend has a public health endpoint, Supabase-authenticated candidate-scoped SQLite evidence operations, Pydantic models, deterministic evidence-reference/verification and exact action/scope checks, and pytest coverage. Token verification and matching the candidate ID to the verified Supabase user are implemented. Login UI, refresh-token management, evidence revision history, resume drafting, and external action execution are not. The API has not had a production security review.
 
 ## Milestone 0 — Product and repository foundation
 
@@ -43,16 +43,16 @@ The documentation foundation and backend foundation exist. The backend has a hea
 
 **Definition of done:** the project runs locally with a documented health check, core domain rules are tested without AI, and the README distinguishes working setup from future features.
 
-**Progress:** The minimal backend foundation and local run instructions are in place. The larger milestone remains in progress: no frontend, authentication, or CI workflow has been added. Local SQLite persistence is now implemented for candidate evidence.
+**Progress:** The minimal backend foundation and local run instructions are in place. The larger milestone remains in progress: no frontend or CI workflow has been added. Local SQLite persistence and Supabase token verification are implemented for candidate evidence routes.
 
 ## Milestone 2 — Candidate Knowledge Base
 
-**Progress:** Initial evidence persistence and API operations are implemented using SQLite. The remaining milestone work includes authentication/ownership enforcement, evidence revision history, and a candidate-facing UI.
+**Progress:** Initial evidence persistence/API operations and token-based ownership checks are implemented. The remaining milestone work includes login/refresh integration, evidence revision history, and a candidate-facing UI.
 
 **Deliverables**
 
 - Candidate evidence create/read/update/delete flow with types, provenance, verification state, and version history.
-- Basic authentication/ownership boundary appropriate to the local MVP; decide how it will evolve before hosting.
+- Login UI and refresh-token lifecycle integration, if needed by the selected frontend flow.
 - Candidate-facing evidence review UI.
 
 **Dependencies:** Milestone 1.

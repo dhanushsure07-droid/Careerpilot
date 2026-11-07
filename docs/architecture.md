@@ -1,6 +1,6 @@
 # CareerPilot Proposed Architecture
 
-**Status:** mostly a design proposal. Implemented now: a FastAPI `/health` endpoint, Pydantic evidence/approval models, deterministic validation helpers, a candidate-scoped SQLite evidence API, and pytest coverage. SQLite is a local file; approval objects remain in-memory, and there is no authentication, LLM, workflow engine, or browser integration. Other components and technology choices below remain proposals to validate.
+**Status:** mostly a design proposal. Implemented now: a public FastAPI `/health` endpoint, Supabase bearer-token verification, identity checks on the SQLite evidence API, deterministic validation helpers, and pytest coverage. Asymmetric JWTs are verified with Supabase JWKS; HS256 tokens are checked through the Supabase Auth user endpoint. SQLite is a local file; approval objects remain in-memory. There is no login UI, refresh-token management, LLM, workflow engine, or browser integration, and the service has not had a production security review.
 
 ## 1. Architecture goals
 
@@ -15,7 +15,7 @@
 | Component | Responsibility | Boundary |
 | --- | --- | --- |
 | Next.js + TypeScript UI | Evidence management, job entry, review screens, draft approval, and application tracking | Displays proposals and collects explicit user intent; does not decide authorization on its own. |
-| FastAPI service (Python) | Current: health and candidate evidence endpoints. Planned: authentication integration, workflow coordination, and broader state transitions | Evidence reads and writes are scoped by candidate ID. Current validation helpers check evidence verification and exact action/scope approval. Candidate identity is not authenticated; duplicate prevention, rate limits, and action execution are not implemented. |
+| FastAPI service (Python) | Current: public health and authenticated candidate evidence endpoints. Planned: workflow coordination and broader state transitions | Verifies bearer tokens and requires the URL candidate ID to equal the verified Supabase user ID. Candidate IDs in URLs remain caller-controlled inputs, so the backend compares them to the authenticated identity on every evidence operation. Duplicate prevention, rate limits, and external action execution are not implemented. |
 | SQLite (current) | Persist candidate evidence in a local database file | Built into Python and easy to run locally without a separate server. It is appropriate for this small, single-process learning stage. Relative `CAREERPILOT_DB_PATH` values resolve from the repository root; blank values fail at startup. New database files use owner-only permissions on POSIX where supported; existing file permissions are not changed. SQLite sidecar permissions are not separately set or verified. There is no encryption, backup, or multi-process deployment plan. |
 | PostgreSQL (proposed later) | Store users, jobs, drafts, approvals, and application event history if deployment/concurrency needs justify it | Relational records and transactions are a good fit, but the project does not need a database server for the current evidence API. |
 | pgvector (optional) | Retrieve semantically related evidence | Candidate evidence remains authoritative. Similarity is a retrieval hint, not proof of truth or fit. Validate against keyword/metadata search first. |
@@ -36,8 +36,13 @@ Next.js and TypeScript are a conventional proposal for a structured interactive 
 ```mermaid
 flowchart LR
     C[Candidate] --> UI[Next.js UI<br/>TypeScript + Tailwind]
-    UI --> API[FastAPI application<br/>domain rules and workflow]
-    API --> DB[(PostgreSQL<br/>candidate evidence, jobs, drafts, approvals, events)]
+    C -->|sign in| AUTH[Supabase Auth]
+    AUTH -->|session access token| UI
+    UI -->|Bearer token| API[FastAPI application<br/>domain rules and workflow]
+    API -. verify asymmetric token .-> JWKS[Supabase JWKS]
+    API -. HS256 fallback .-> AUTHUSER[Supabase Auth /user]
+    API --> DB[(SQLite current<br/>candidate evidence)]
+    API -. planned database .-> PG[(PostgreSQL)]
     API -. optional vector retrieval .-> V[(pgvector)]
     API --> WF[Workflow coordinator<br/>simple code first; LangGraph if justified]
     WF --> LLM[LLM and embedding APIs<br/>provider to be selected]
@@ -51,11 +56,11 @@ flowchart LR
     API --> DB
 ```
 
-The diagram describes the future proposal, not the current implementation. Today the backend accesses SQLite for evidence. PostgreSQL and other components remain planned. AI output cannot write directly to a database or trigger a browser action.
+The UI, workflow, vector search, browser automation, and PostgreSQL in the diagram are future proposals. Today the backend verifies bearer tokens and stores evidence in SQLite. AI output cannot write directly to a database or trigger a browser action.
 
 ## 4. Data flow
 
-1. **Evidence setup (partly implemented):** Candidate-scoped API accepts claim, source/provenance, and metadata. New items start unverified. A separate verification endpoint changes only verification status and update time; source and claim are preserved. Data persists in a local SQLite file. Candidate ID in the URL is caller-controlled: it is a scope key, not proof of identity, because authentication is not implemented.
+1. **Evidence setup (partly implemented):** Candidate-scoped API accepts claim, source/provenance, and metadata. New items start unverified. A separate verification endpoint changes only verification status and update time; source and claim are preserved. Data persists in a local SQLite file. The authenticated Supabase user ID (`sub`, also the `auth.users.id`) must match the caller-controlled candidate ID in the URL.
 2. **Job intake:** Candidate pastes a job description. Store the raw text as untrusted content. Do not fetch links or execute content. An extraction step may propose structured requirements with text references; candidate reviews and edits them.
 3. **Explainable comparison:** Retrieval selects candidate evidence for each requirement using metadata/keyword search first, with embeddings as an optional aid. The backend records which evidence was considered. UI presents supported, partial, unknown, or not evidenced states and the reasons. These labels describe the available records, not the person's abilities or hiring likelihood.
 4. **Draft generation:** The workflow sends the minimum necessary reviewed requirements and verified evidence to the selected LLM. The model returns a structured draft with evidence identifiers for factual claims. The backend checks identifiers, ownership, verification state, and required content. Invalid/unsupported claims are flagged or removed from an approvable draft.
@@ -79,7 +84,7 @@ The diagram describes the future proposal, not the current implementation. Today
 - **ApplicationEvent:** append-oriented history of status changes and browser outcomes. Avoid storing full page contents or secrets unnecessarily.
 - **WorkflowRun (optional):** resumable workflow state and step metadata, with sensitive payloads minimized or referenced rather than copied.
 
-Use database constraints and transactions for ownership relationships, unique idempotency keys, valid state transitions where practical. Exact schema, authentication method, and retention/deletion policy remain to be decided.
+Use database constraints and transactions for ownership relationships, unique idempotency keys, and valid state transitions where practical. Supabase Auth is the current identity provider for the evidence API; hosted deployment, token lifecycle management, and retention/deletion policy remain to be decided.
 
 ## 6. Agent/workflow design
 
@@ -119,7 +124,9 @@ LangGraph may represent pauses and resume points, but deterministic services sho
 
 ### Permissions and external actions
 
-- Future hosted use requires authenticated ownership checks at the backend for every candidate, job, evidence, and draft operation. Current endpoints scope records by candidate ID but do not authenticate that the caller owns that ID; do not use with real personal data.
+- Current evidence endpoints verify the bearer token and require `candidate_id == verified Supabase user UUID`. The route parameter is still caller-controlled, but changing it to a different UUID produces 403. This is ownership enforcement for these routes, not a complete production security review.
+- The backend does not provide login or refresh-token handling. Existing local evidence rows are owned by their stored candidate UUID; they must be deliberately mapped to the matching Supabase user UUID before that user can access them.
+- No access token or publishable key is logged. The publishable key is sent only in the `apikey` header when the Auth server fallback is used; it is never treated as a user credential.
 - Submission/message approval is explicit, action-specific, and tied to the exact destination and payload. Editing either invalidates approval.
 - The implemented helper compares the complete action name and scope mapping for equality. It is only a domain check over caller-supplied objects: it does not authenticate the approver, persist approval, prove user intent, prevent replay, or authorize a real external action.
 - Enforce approval, duplicate prevention, idempotency, rate limits, field validation, and allowed destination in deterministic application code immediately before browser execution.
@@ -133,7 +140,9 @@ LangGraph may represent pauses and resume points, but deterministic services sho
 - **Provider/model selection:** compare factual grounding, structured output quality, latency/cost, privacy terms, and handling of candidate personal data using synthetic or consented test data.
 - **Next.js and FastAPI split:** separation gives a clear API and Python AI layer but adds two runtimes and deployment concerns. Validate whether the project needs a separate backend before operational complexity grows.
 - **Embedding provider:** choose only after retrieval needs are demonstrated and data handling is reviewed.
-- **Authentication and hosting:** not selected; decide before multi-user or hosted personal data is introduced.
+- **Authentication and hosting:** Supabase Auth is used for the current evidence API. Hosting, login UI, refresh-token lifecycle, and a production security review remain future decisions/work.
 - **Evidence claim entailment:** the current validator confirms that cited IDs exist in the supplied collection and are marked verified. It cannot determine whether the evidence actually supports the claim wording; a future review design and tests must address this limitation.
+- **Supabase token verification:** asymmetric RS256/ES256 tokens are verified locally against the project JWKS with issuer, audience, expiry, role, and subject checks. PyJWT caches the JWKS set for a bounded interval (five minutes by default). HS256 tokens are checked by the project's Auth `/user` endpoint. Local JWT checks do not perform a fresh Auth-server liveness/revocation check on every request; revocation can lag behind the JWKS cache until refresh, so key rotation behavior should be reviewed for deployment.
+- **Auth configuration and tests:** the backend loads the root `.env` without overriding environment variables; `.env.example` contains placeholders. Tests generate signing keys or mock Auth HTTP responses and do not contact Supabase.
 - **Observability:** Langfuse and OpenTelemetry are deferred. Choose only when traces solve a concrete debugging or reliability problem and redaction/retention requirements are in place.
 - **Real job-board integration:** excluded from MVP. Any future integration requires review of site terms, privacy, reliability, and safe user authorization before implementation.

@@ -9,12 +9,14 @@ description = "Minimal backend foundation for CareerPilot"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110,<1.0",
+    "httpx>=0.27,<1.0",
+    "PyJWT[crypto]>=2.10,<3.0",
     "pydantic>=2.6,<3.0",
+    "python-dotenv>=1.0,<2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "httpx>=0.27,<1.0",
     "pytest>=8.0,<9.0",
 ]
 

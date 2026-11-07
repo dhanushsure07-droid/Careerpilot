@@ -1,28 +1,82 @@
 import os
 import sqlite3
 import stat
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.models.evidence import CandidateEvidence, PersistedCandidateEvidence, VerificationStatus
+from app.services.auth import InvalidAccessToken
 from app.services.evidence_store import (
     PROJECT_ROOT,
     DatabaseConfigurationError,
     EvidenceStore,
 )
 
+USER_A = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+USER_B = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+
+
+class TestTokenVerifier:
+    """Route-test double; cryptographic validation is tested separately."""
+
+    users = {"user-a-token": USER_A, "user-b-token": USER_B}
+
+    def verify(self, access_token: str) -> UUID:
+        try:
+            return self.users[access_token]
+        except KeyError as error:
+            raise InvalidAccessToken("Invalid test token") from error
+
 
 @pytest.fixture
 def client(tmp_path):
     store = EvidenceStore(tmp_path / "test-evidence.sqlite3")
-    return TestClient(create_app(store))
+    test_client = TestClient(create_app(store, TestTokenVerifier()))
+    test_client.headers["Authorization"] = "Bearer user-a-token"
+    return test_client
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("get", f"/candidates/{USER_A}/evidence", None),
+        ("post", f"/candidates/{USER_A}/evidence", {"claim": "x", "source": "y"}),
+        ("get", f"/candidates/{USER_A}/evidence/{uuid4()}", None),
+        (
+            "patch",
+            f"/candidates/{USER_A}/evidence/{uuid4()}/verification",
+            {"verification_status": "verified"},
+        ),
+    ],
+)
+def test_missing_bearer_token_is_rejected_for_every_evidence_route(
+    client: TestClient, method: str, path: str, body: dict | None
+) -> None:
+    request = getattr(client, method)
+    if body is None:
+        response = request(path, headers={"Authorization": ""})
+    else:
+        response = request(path, json=body, headers={"Authorization": ""})
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_invalid_bearer_token_is_rejected(client: TestClient) -> None:
+    response = client.get(
+        f"/candidates/{USER_A}/evidence",
+        headers={"Authorization": "Bearer malformed-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid bearer token"
 
 
 def test_create_list_and_get_evidence_for_candidate(client: TestClient) -> None:
-    candidate_id = uuid4()
+    candidate_id = USER_A
     response = client.post(
         f"/candidates/{candidate_id}/evidence",
         json={
@@ -77,35 +131,51 @@ def test_persisted_evidence_requires_candidate_id_but_validation_model_does_not(
 def test_candidate_scoping_hides_and_protects_other_candidate_evidence(
     client: TestClient,
 ) -> None:
-    owner_id = uuid4()
-    other_id = uuid4()
+    owner_id = USER_B
     created = client.post(
         f"/candidates/{owner_id}/evidence",
         json={"claim": "Owned claim", "source": "Owned source"},
+        headers={"Authorization": "Bearer user-b-token"},
     ).json()
     evidence_id = created["id"]
 
-    assert client.get(f"/candidates/{other_id}/evidence").json() == []
+    assert client.get(f"/candidates/{owner_id}/evidence").status_code == 403
     assert (
-        client.get(f"/candidates/{other_id}/evidence/{evidence_id}").status_code
-        == 404
+        client.get(f"/candidates/{owner_id}/evidence/{evidence_id}").status_code
+        == 403
     )
     assert (
         client.patch(
-            f"/candidates/{other_id}/evidence/{evidence_id}/verification",
+            f"/candidates/{owner_id}/evidence/{evidence_id}/verification",
             json={"verification_status": "verified"},
         ).status_code
-        == 404
+        == 403
+    )
+    assert (
+        client.post(
+            f"/candidates/{owner_id}/evidence",
+            json={"claim": "Attempted claim", "source": "Attempted source"},
+        ).status_code
+        == 403
     )
 
-    still_owned = client.get(f"/candidates/{owner_id}/evidence/{evidence_id}")
+    still_owned = client.get(
+        f"/candidates/{owner_id}/evidence/{evidence_id}",
+        headers={"Authorization": "Bearer user-b-token"},
+    )
     assert still_owned.json()["verification_status"] == "unverified"
+    assert len(
+        client.get(
+            f"/candidates/{owner_id}/evidence",
+            headers={"Authorization": "Bearer user-b-token"},
+        ).json()
+    ) == 1
 
 
 def test_missing_evidence_returns_not_found_for_get_and_update(
     client: TestClient,
 ) -> None:
-    candidate_id = uuid4()
+    candidate_id = USER_A
     evidence_id = uuid4()
 
     assert client.get(
@@ -142,7 +212,7 @@ def test_missing_evidence_returns_not_found_for_get_and_update(
 def test_invalid_evidence_input_returns_validation_error(
     client: TestClient, payload: dict
 ) -> None:
-    response = client.post(f"/candidates/{uuid4()}/evidence", json=payload)
+    response = client.post(f"/candidates/{USER_A}/evidence", json=payload)
 
     assert response.status_code == 422
 
@@ -151,7 +221,7 @@ def test_invalid_verification_status_returns_validation_error(
     client: TestClient,
 ) -> None:
     response = client.patch(
-        f"/candidates/{uuid4()}/evidence/{uuid4()}/verification",
+        f"/candidates/{USER_A}/evidence/{uuid4()}/verification",
         json={"verification_status": "maybe"},
     )
 
@@ -162,10 +232,10 @@ def test_invalid_verification_status_returns_validation_error(
     ("method", "path"),
     [
         ("get", "/candidates/not-a-uuid/evidence"),
-        ("get", f"/candidates/{uuid4()}/evidence/not-a-uuid"),
+        ("get", f"/candidates/{USER_A}/evidence/not-a-uuid"),
         (
             "patch",
-            f"/candidates/{uuid4()}/evidence/not-a-uuid/verification",
+            f"/candidates/{USER_A}/evidence/not-a-uuid/verification",
         ),
     ],
 )
@@ -173,7 +243,10 @@ def test_malformed_path_uuids_return_validation_error(
     client: TestClient, method: str, path: str
 ) -> None:
     request = getattr(client, method)
-    response = request(path, json={"verification_status": "verified"}) if method == "patch" else request(path)
+    if method == "patch":
+        response = request(path, json={"verification_status": "verified"})
+    else:
+        response = request(path)
 
     assert response.status_code == 422
 
@@ -181,7 +254,7 @@ def test_malformed_path_uuids_return_validation_error(
 def test_verification_update_preserves_provenance_and_creation_time(
     client: TestClient,
 ) -> None:
-    candidate_id = uuid4()
+    candidate_id = USER_A
     created = client.post(
         f"/candidates/{candidate_id}/evidence",
         json={
